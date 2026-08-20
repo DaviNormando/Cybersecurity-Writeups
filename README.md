@@ -1,0 +1,206 @@
+# BTLO — Bruteforce Challenge Writeup
+
+**Plataforma:** Blue Team Labs Online (BTLO)
+**Categoria:** Incident Response
+**Dificuldade:** Medium
+**Pontos:** 20
+**Autor:** Davi
+**Data:** Agosto/2026
+
+---
+
+## 📋 Cenário
+
+O SOC identificou um grande número de eventos de **Audit Failure** no Windows Security Event Log de um sistema. O objetivo do desafio é analisar os logs fornecidos (`.evtx`, `.csv`, `.txt`) e responder a uma série de perguntas para caracterizar o incidente: identificar o tipo de ataque, a conta-alvo, a origem e o padrão de comportamento.
+
+Os arquivos fornecidos no challenge:
+- `BTLO_Bruteforce_Challenge.evtx` — log nativo do Windows Event Viewer
+- `BTLO_Bruteforce_Challenge.csv` — exportação resumida do log
+- `BTLO_Bruteforce_Challenge.txt` — exportação em texto completo, com todos os campos do evento
+
+---
+
+## 🛠️ Ferramentas Utilizadas
+
+- **VM Ubuntu Server** (ambiente isolado de análise, sem GUI)
+- **SSH / SCP** — acesso remoto e transferência de arquivos entre host Windows e VM de análise
+- **grep, awk, sort, uniq, tr, wc** — parsing e análise de log em linha de comando
+- **whois** — consulta de geolocalização/registro de IP
+
+---
+
+## 🧭 Metodologia
+
+### 1. Preparação do ambiente
+
+Por questão de segurança e boas práticas de SOC, a análise não foi feita na máquina host — todo o trabalho foi realizado em uma VM Ubuntu Server isolada, acessada via SSH:
+
+```bash
+ssh davi@localhost -p 2222
+```
+
+O arquivo zipado do challenge foi transferido do host Windows para a VM via SCP:
+
+```bash
+scp -P 2222 "C:\Users\davio\Downloads\<hash>.zip" davi@localhost:/home/davi/
+```
+
+E extraído dentro da VM:
+
+```bash
+unzip <hash>.zip
+```
+
+### 2. Reconhecimento inicial
+
+Antes de qualquer análise, o arquivo `READ ME.txt` foi verificado (contém apenas termos de uso/direitos autorais, sem dados do cenário).
+
+Em seguida, o `.txt` com os eventos completos foi inspecionado. Um evento de exemplo (Event ID 4625) revelou a estrutura básica do log:
+
+```
+Audit Failure   2/12/2022 6:29:34 AM   Microsoft-Windows-Security-Auditing   4625   Logon   "An account failed to log on."
+
+Subject:
+    Account Name: -
+Logon Type: 3
+Account For Which Logon Failed:
+    Account Name: administrator
+Failure Information:
+    Failure Reason: Unknown user name or bad password.
+Network Information:
+    Source Network Address: 113.161.192.227
+    Source Port: 58817
+```
+
+![Evento 4625 completo](screenshots/01-evento-4625-completo.png)
+![Evento 4625 com descrição e Event ID](screenshots/02-evento-4625-com-descricao.png)
+
+Esse evento único já indicava: falha de logon via rede (Logon Type 3), mirando a conta `administrator`, vinda de um IP externo — padrão clássico de **RDP Brute Force**.
+
+> **MITRE ATT&CK:** T1110 – Brute Force (tática: Credential Access), com possível T1078 – Valid Accounts caso o ataque tenha sucesso (Initial Access).
+
+### 3. Contagem de eventos — cuidado com CSV mal formatado
+
+Uma primeira tentativa de contar linhas do CSV com `wc -l` retornou um valor muito acima do esperado:
+
+```bash
+wc -l BTLO_Bruteforce_Challenge.csv
+# 155647
+```
+
+Isso não batia com a contagem real de eventos. O motivo: campos de texto longo entre aspas no CSV (como a descrição do evento) continham quebras de linha internas, inflando a contagem de `wc -l`. A contagem confiável foi obtida filtrando pelo padrão "Audit Failure":
+
+```bash
+grep -c "Audit Failure" BTLO_Bruteforce_Challenge.csv
+# 3103
+```
+
+![Contagem de eventos e validação de campos únicos](screenshots/03-contagem-eventos-e-whois-install.png)
+
+**Lição:** `wc -l` conta quebras de linha reais no arquivo, não necessariamente "registros" — em CSVs com campos multilinha, isso pode gerar números errados.
+
+### 4. Extração de campos específicos
+
+O CSV exportado tinha apenas 5 colunas genéricas (`Keywords, Date and Time, Source, Event ID, Task Category`) — a coluna "Source" ali não é o IP de origem, e sim o nome do provedor de log (`Microsoft-Windows-Security-Auditing`), sempre igual em todos os eventos. Os dados ricos (IP, porta, conta-alvo) só existiam no `.txt`.
+
+Para extrair valores únicos e validar padrões (evitar assumir "sempre é X" sem checar todas as ocorrências):
+
+```bash
+grep "Account Name:" BTLO_Bruteforce_Challenge.txt | sort | uniq -c
+grep "Failure Reason:" BTLO_Bruteforce_Challenge.txt | sort | uniq -c
+grep "Source Network Address:" BTLO_Bruteforce_Challenge.txt | sort | uniq -c
+```
+
+### 5. Range de portas de origem — lidando com CRLF
+
+Para identificar o range de portas usadas pelo atacante, foi necessário extrair, limpar e ordenar numericamente os valores de "Source Port":
+
+```bash
+grep "Source Port:" BTLO_Bruteforce_Challenge.txt | awk '{print $NF}' | head -5
+```
+
+![Lista de source ports extraídos](screenshots/05-source-ports-lista.png)
+
+Uma primeira tentativa de filtrar apenas valores numéricos com `grep -E '^[0-9]+$'` retornou zero resultados. Diagnóstico por eliminação (testando cada etapa do pipeline separadamente) revelou o problema:
+
+```bash
+grep "Source Port:" BTLO_Bruteforce_Challenge.txt | awk '{print $NF}' | head -3 | cat -A
+# 59545^M$
+```
+
+O `^M` indica um caractere `\r` (carriage return) — o arquivo `.txt` foi gerado no Windows e usa quebra de linha CRLF, enquanto as ferramentas Linux esperam LF. Em vez de alterar o arquivo original (**princípio de cadeia de custódia** — evidências nunca devem ser modificadas), o `\r` foi removido apenas dentro do pipeline de processamento:
+
+```bash
+# Porta mínima
+grep "Source Port:" BTLO_Bruteforce_Challenge.txt | awk '{print $NF}' | tr -d '\r' | grep -E '^[0-9]+$' | sort -n | head -1
+
+# Porta máxima
+grep "Source Port:" BTLO_Bruteforce_Challenge.txt | awk '{print $NF}' | tr -d '\r' | grep -E '^[0-9]+$' | sort -n | tail -1
+```
+
+![Diagnóstico do problema CRLF e range de portas final](screenshots/06-pipeline-crlf-fix-portas.png)
+
+Resultado: portas de origem variando entre **49162** e **65534**.
+
+### 6. Geolocalização do IP atacante
+
+```bash
+whois 113.161.192.227
+```
+
+Campo `country:` no resultado confirmou a origem do IP (Vietnã — VNPT-VN).
+
+![Resultado do whois confirmando Vietnã](screenshots/04-whois-resultado-vietna.png)
+
+---
+
+## ✅ Prova de Conclusão
+
+![Todas as questões resolvidas na plataforma BTLO](screenshots/07-challenge-solved-btlo.png)
+
+## ❓ Perguntas e Respostas
+
+| # | Pergunta | Resposta | Como foi obtida |
+|---|----------|----------|------------------|
+| 1 | Quantos eventos de Audit Failure existem? | **3103** | `grep -c "Audit Failure" BTLO_Bruteforce_Challenge.csv` |
+| 2 | Username da conta local sendo atacada | **administrator** | `grep "Account Name:" ... \| sort \| uniq -c` no campo "Account For Which Logon Failed" |
+| 3 | Motivo da falha (Failure Reason) | **Unknown user name or bad password** | `grep "Failure Reason:" ... \| sort \| uniq -c` |
+| 4 | Windows Event ID associado | **4625** | Inspeção direta do cabeçalho do evento |
+| 5 | IP de origem do ataque | **113.161.192.227** | `grep "Source Network Address:" ... \| sort \| uniq -c` |
+| 6 | País associado ao IP | **Vietnã (VN)** | `whois 113.161.192.227` |
+| 7 | Range de portas de origem | **49162-65534** | `sort -n` com `head -1` / `tail -1` após limpar CRLF |
+
+---
+
+## 🎯 Indicators of Compromise (IOCs)
+
+| Tipo | Valor |
+|------|-------|
+| IP de origem | 113.161.192.227 |
+| País de origem | Vietnã |
+| Conta-alvo | administrator |
+| Event ID | 4625 (Logon Failure) |
+| Logon Type | 3 (Network) |
+| Volume de tentativas | 3.103 eventos |
+| Técnica MITRE ATT&CK | T1110 – Brute Force |
+
+---
+
+## 📝 Resumo Executivo
+
+Entre 12/02/2022, o host monitorado registrou **3.103 tentativas de logon falhas** (Event ID 4625, Logon Type 3 — rede) originadas do IP **113.161.192.227** (Vietnã), todas direcionadas à conta administrativa local **`administrator`**, caracterizando um ataque de **força bruta via RDP** (MITRE ATT&CK T1110 — Credential Access). Não há evidência nos dados analisados de que o ataque tenha resultado em autenticação bem-sucedida. Recomenda-se bloqueio do IP de origem no firewall perimetral, aplicação de política de bloqueio de conta após N tentativas falhas (account lockout), e desabilitação/renomeação da conta `administrator` padrão exposta à rede.
+
+---
+
+## 📚 Lições Aprendidas
+
+- **Nunca analisar arquivos suspeitos/de investigação na máquina principal** — sempre usar VM isolada, mesmo para arquivos aparentemente "seguros" como logs de texto.
+- **`wc -l` não é confiável para contar registros em CSV** com campos multilinha — usar `grep -c` em um padrão único do registro é mais seguro.
+- **Arquivos exportados no Windows costumam usar CRLF** (`\r\n`), o que quebra silenciosamente pipelines de regex no Linux (`^...$`). Diagnosticar com `cat -A` e limpar com `tr -d '\r'` sem alterar o arquivo original.
+- **Cadeia de custódia**: evidências nunca devem ser modificadas — filtros e limpezas devem ocorrer em pipeline, nunca sobrescrevendo o arquivo de origem.
+- **Nem toda coluna com nome "Source" é o que parece** — no CSV exportado do Windows Event Viewer, "Source" é o provedor do log, não o IP de origem do evento.
+- **Sempre validar hipóteses com dados, não apenas com a primeira amostra** — usar `sort | uniq -c` para confirmar se um valor observado (IP, usuário, motivo de falha) se repete de forma consistente em todo o dataset.
+
+---
+
+*Writeup produzido como parte de treinamento prático para certificação SOC Analyst N1, praticando em ambiente BTLO com mentoria simulada.*
