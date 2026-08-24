@@ -1,4 +1,4 @@
-# Automação de Reconhecimento — Nmap Report Tool
+﻿# Automação de Reconhecimento — Nmap Report Tool
 
 **Categoria:** Projeto de Automação / Scripting
 **Data:** Agosto 2026
@@ -37,7 +37,7 @@ git init
 git branch -m main
 ```
 
-![Inicialização do repositório Git](screenshots/01-git-init.png)
+![Inicialização do repositório Git](screenshots/nmap-01-git-init.png)
 
 ### 2. Configuração de acesso SSH ao Kali
 
@@ -85,7 +85,7 @@ Resultado identificado e formatado corretamente:
 | 22 | open | ssh | OpenSSH 10.2p1 Ubuntu 2ubuntu3.5 (Ubuntu Linux; protocol 2.0) |
 | 80 | open | http | Apache httpd |
 
-![Execução do script com sucesso, portas identificadas](screenshots/02-scan-sucesso.png)
+![Execução do script com sucesso, portas identificadas](screenshots/nmap-02-scan-sucesso.png)
 
 ### 6. Transferência para o host e versionamento final
 
@@ -112,7 +112,7 @@ git remote add origin https://github.com/DaviNormando/nmap-report-tool.git
 git push -u origin main
 ```
 
-![Push final confirmado no GitHub](screenshots/03-push-sucesso.png)
+![Push final confirmado no GitHub](screenshots/nmap-03-push-sucesso.png)
 
 ---
 
@@ -148,3 +148,4 @@ git push -u origin main
 - Expandir o parser para suportar múltiplos alvos em uma única execução
 - Adicionar opção de exportação em outros formatos (JSON, CSV)
 - Integrar o script como etapa automatizada dentro do fluxo de detecção do home lab (Wazuh)
+
