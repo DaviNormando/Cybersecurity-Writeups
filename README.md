@@ -7,7 +7,8 @@ Repositório pessoal de writeups e projetos — home lab, TryHackMe, LetsDefend,
 | Plataforma | Desafio | Categoria | Data |
 |---|---|---|---|
 | BTLO | [Bruteforce Challenge](./BTLO-Bruteforce-Challenge) | Incident Response | Ago/2026 |
-| HomeLab | 
+| Home Lab | [SSH Brute Force + Correlação no Wazuh](./HomeLab-SSH-Bruteforce/) | Detecção / Blue Team | Ago/2026 |
+| Home Lab | [Troubleshooting de Ruído no SIEM](./HomeLab-SIEM-Troubleshooting/) | SIEM Engineering | Ago/2026 |
 
 ## Projetos
 
