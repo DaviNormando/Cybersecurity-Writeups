@@ -7,6 +7,7 @@ Repositório pessoal de writeups e projetos — home lab, TryHackMe, LetsDefend,
 | Plataforma | Desafio | Categoria | Data |
 |---|---|---|---|
 | BTLO | [Bruteforce Challenge](./BTLO-Bruteforce-Challenge) | Incident Response | Ago/2026 |
+| HomeLab | 
 
 ## Projetos
 
