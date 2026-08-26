@@ -1,121 +1,206 @@
-# Caso 001 — Detecção de SSH Brute Force com Sucesso via Wazuh
+# BTLO — Bruteforce Challenge Writeup
 
-**Data:** 25/08/2026
-**Ambiente:** Home Lab pessoal (VirtualBox, NatNetwork)
-**Atacante:** Kali Linux — 10.0.2.3
-**Alvo:** Ubuntu Server 24.04 — 10.0.2.5 (agente Wazuh: `AgenteVitima`)
-**SIEM:** Wazuh 4.14.7 — 10.0.2.4
+**Plataforma:** Blue Team Labs Online (BTLO)
+**Categoria:** Incident Response
+**Dificuldade:** Medium
+**Pontos:** 20
+**Autor:** Davi
+**Data:** Agosto/2026
 
-## Objetivo do exercício
+---
 
-Simular um ataque de força bruta contra o serviço SSH de um host Linux e validar a capacidade de detecção do SIEM para esse padrão, incluindo a correlação entre múltiplas falhas de autenticação e um login bem-sucedido subsequente.
+## 📋 Cenário
 
-## Mapeamento MITRE ATT&CK
+O SOC identificou um grande número de eventos de **Audit Failure** no Windows Security Event Log de um sistema. O objetivo do desafio é analisar os logs fornecidos (`.evtx`, `.csv`, `.txt`) e responder a uma série de perguntas para caracterizar o incidente: identificar o tipo de ataque, a conta-alvo, a origem e o padrão de comportamento.
 
-- **Tática:** Credential Access (TA0006)
-- **Técnica:** T1110 (Brute Force)
-- **Sub-técnica:** T1110.001 (Password Guessing)
+Os arquivos fornecidos no challenge:
+- `BTLO_Bruteforce_Challenge.evtx` — log nativo do Windows Event Viewer
+- `BTLO_Bruteforce_Challenge.csv` — exportação resumida do log
+- `BTLO_Bruteforce_Challenge.txt` — exportação em texto completo, com todos os campos do evento
 
-O próprio Wazuh confirmou esse mapeamento automaticamente na regra de correlação disparada (ver evidência abaixo), e foi além: também etiquetou o evento com T1078 (Valid Accounts), cobrindo as táticas de Defense Evasion, Persistence, Privilege Escalation e Initial Access. Faz sentido: o momento em que uma senha é quebrada com sucesso é exatamente a fronteira entre "tentando obter acesso" (T1110) e "já possui uma credencial válida utilizável" (T1078), e o Wazuh reflete essa transição no próprio alerta.
+---
 
-## Preparação do cenário
+## 🛠️ Ferramentas Utilizadas
 
-Para viabilizar um teste controlado (positive control), foi criado um usuário de teste dedicado no Ubuntu, em vez de atacar uma conta de produção:
+- **VM Ubuntu Server** (ambiente isolado de análise, sem GUI)
+- **SSH / SCP** — acesso remoto e transferência de arquivos entre host Windows e VM de análise
+- **grep, awk, sort, uniq, tr, wc** — parsing e análise de log em linha de comando
+- **whois** — consulta de geolocalização/registro de IP
 
-```bash
-sudo useradd -m teste
-sudo passwd teste
-```
+---
 
-Confirmação prévia de que o SSH aceita autenticação por senha (pré-requisito para o ataque funcionar):
+## 🧭 Metodologia
 
-```bash
-sudo sshd -T | grep passwordauthentication
-# passwordauthentication yes
-```
+### 1. Preparação do ambiente
 
-## Execução do ataque
-
-Wordlist customizada, criada no Kali, com a senha correta posicionada deliberadamente para gerar um número conhecido de tentativas falhas antes do sucesso.
-
-Ataque com Hydra, direcionado ao IP interno do alvo na rede NAT (não via o redirecionamento de porta do host, que só existe para acesso externo à VM):
+Por questão de segurança e boas práticas de SOC, a análise não foi feita na máquina host — todo o trabalho foi realizado em uma VM Ubuntu Server isolada, acessada via SSH:
 
 ```bash
-hydra -l teste -P ~/wordlist.txt ssh://10.0.2.5 -t 4 -f -V
+ssh davi@localhost -p 2222
 ```
 
-**Resultado:** 11 tentativas falhas seguidas de 1 sucesso (`teste` / `162534`), em ~16 segundos, todas originadas de 10.0.2.3.
+O arquivo zipado do challenge foi transferido do host Windows para a VM via SCP:
 
-![Execução do Hydra contra o Ubuntu, mostrando as 12 tentativas e a senha válida encontrada](screenshots/caso-001/01-hydra-attack.png)
+```bash
+scp -P 2222 "C:\Users\davio\Downloads\<hash>.zip" davi@localhost:/home/davi/
+```
 
-## Evidência no host alvo (ground truth)
+E extraído dentro da VM:
 
-Confirmação direta no Ubuntu de que todas as tentativas, falhas e o sucesso final, foram registradas pelo sistema operacional:
+```bash
+unzip <hash>.zip
+```
 
-![auth.log do Ubuntu mostrando as tentativas Failed password e o Accepted password final](screenshots/caso-001/02-auth-log-ubuntu.png)
+### 2. Reconhecimento inicial
 
-## Troubleshooting: log existia, mas não chegava ao Wazuh
+Antes de qualquer análise, o arquivo `READ ME.txt` foi verificado (contém apenas termos de uso/direitos autorais, sem dados do cenário).
 
-Na primeira execução do ataque, o Wazuh não gerou nenhum alerta relevante. Diagnóstico resumido:
+Em seguida, o `.txt` com os eventos completos foi inspecionado. Um evento de exemplo (Event ID 4625) revelou a estrutura básica do log:
 
-1. Confirmado que o agente estava com status **Active**.
-2. Confirmado, direto no Ubuntu, que o `/var/log/auth.log` continha todas as 11 falhas e o sucesso. Isso descartou problema de geração de log.
-3. Buscas no painel não retornaram os eventos esperados.
-4. **Causa raiz identificada:** o agente Wazuh no Ubuntu estava configurado para coletar logs via `journald`, sem nenhuma entrada `<localfile>` monitorando `/var/log/auth.log` diretamente.
-5. **Correção aplicada:** adicionada uma entrada `<localfile>` explícita monitorando `/var/log/auth.log` em formato `syslog`, seguida de `sudo systemctl restart wazuh-agent`.
-6. Ataque reexecutado após a correção. Desta vez os eventos foram corretamente capturados e correlacionados (documentado neste caso).
+```
+Audit Failure   2/12/2022 6:29:34 AM   Microsoft-Windows-Security-Auditing   4625   Logon   "An account failed to log on."
 
-*(O caso completo desse troubleshooting, incluindo os prints do erro de certificado e do loop de eventos, está documentado separadamente em [Caso 002 — Troubleshooting de Ruído Operacional no SIEM](../HomeLab-SIEM-Troubleshooting/).)*
+Subject:
+    Account Name: -
+Logon Type: 3
+Account For Which Logon Failed:
+    Account Name: administrator
+Failure Information:
+    Failure Reason: Unknown user name or bad password.
+Network Information:
+    Source Network Address: 113.161.192.227
+    Source Port: 58817
+```
 
-## Evidência de detecção
+![Evento 4625 completo](screenshots/01-evento-4625-completo.png)
+![Evento 4625 com descrição e Event ID](screenshots/02-evento-4625-com-descricao.png)
 
-Visão geral do painel após o ataque: 5.367 eventos totais na janela analisada, dos quais 2 alcançaram nível 12 ou superior, 52 foram falhas de autenticação e 16 sucessos. O gráfico de MITRE ATT&CK já destaca Password Guessing, SSH, Valid Accounts e Brute Force como as técnicas mais recorrentes no período.
+Esse evento único já indicava: falha de logon via rede (Logon Type 3), mirando a conta `administrator`, vinda de um IP externo — padrão clássico de **RDP Brute Force**.
 
-![Dashboard do Wazuh com o resumo de alertas e o gráfico de técnicas MITRE ATT&CK](screenshots/caso-001/03-wazuh-dashboard.png)
+> **MITRE ATT&CK:** T1110 – Brute Force (tática: Credential Access), com possível T1078 – Valid Accounts caso o ataque tenha sucesso (Initial Access).
 
-Isolando os eventos relacionados ao ataque (60 hits), o alerta de maior severidade aparece destacado: `Multiple authentication failures followed by a success`, nível **12**, rule.id **40112**. Essa é a regra de correlação que buscávamos.
+### 3. Contagem de eventos — cuidado com CSV mal formatado
 
-![Lista de eventos filtrados mostrando o alerta de correlação de nível 12](screenshots/caso-001/04-wazuh-events-60hits.png)
+Uma primeira tentativa de contar linhas do CSV com `wc -l` retornou um valor muito acima do esperado:
 
-Detalhe completo do documento desse alerta:
+```bash
+wc -l BTLO_Bruteforce_Challenge.csv
+# 155647
+```
 
-| Campo | Valor |
-|---|---|
-| rule.id | 40112 |
-| rule.description | Multiple authentication failures followed by a success |
-| rule.level | 12 |
-| rule.mitre.id | T1078, T1110 |
-| rule.mitre.tactic | Defense Evasion, Persistence, Privilege Escalation, Initial Access, Credential Access |
-| rule.mitre.technique | Valid Accounts, Brute Force |
-| timestamp | Aug 25, 2026 @ 13:20:45.160 |
-| predecoder.program_name | sshd-session |
+Isso não batia com a contagem real de eventos. O motivo: campos de texto longo entre aspas no CSV (como a descrição do evento) continham quebras de linha internas, inflando a contagem de `wc -l`. A contagem confiável foi obtida filtrando pelo padrão "Audit Failure":
 
-![Documento expandido do alerta, com o mapeamento MITRE ATT&CK e frameworks de compliance atribuídos automaticamente pelo Wazuh](screenshots/caso-001/05-document-details.png)
+```bash
+grep -c "Audit Failure" BTLO_Bruteforce_Challenge.csv
+# 3103
+```
 
-**Observação técnica:** o campo `location` desse documento aparece como `journald`, não como o `auth.log` que adicionamos na correção. É possível que, após o restart do agente, a coleta via journald também tenha passado a capturar corretamente esse tipo de evento (talvez por reprocessar a partir de um cursor mais recente), operando em paralelo à nova fonte de arquivo. Vale investigar num próximo caso se as duas fontes estão duplicando eventos. Isso não invalida a detecção, mas é um ponto de atenção para configuração de produção.
+![Contagem de eventos e validação de campos únicos](screenshots/03-contagem-eventos-e-whois-install.png)
 
-## Análise como N1
+**Lição:** `wc -l` conta quebras de linha reais no arquivo, não necessariamente "registros" — em CSVs com campos multilinha, isso pode gerar números errados.
 
-**Falso positivo?** Não. Mesmo IP de origem realizando múltiplas tentativas de senha contra o mesmo usuário, culminando em sucesso, em janela curta de tempo. É um padrão comportamental consistente de brute force bem-sucedido, não ruído aleatório.
+### 4. Extração de campos específicos
 
-**Gravidade:** Alta. O nível 12 atribuído pelo Wazuh já indica criticidade, mas o contexto agrava ainda mais a leitura: a origem é **interna** à rede, não um scanner externo da internet. Tráfego malicioso originado de dentro da rede é tipicamente mais preocupante, pois sugere que a máquina de origem pode já estar comprometida e sendo usada para movimentação lateral, em vez de ser apenas ruído de varredura externa.
+O CSV exportado tinha apenas 5 colunas genéricas (`Keywords, Date and Time, Source, Event ID, Task Category`) — a coluna "Source" ali não é o IP de origem, e sim o nome do provedor de log (`Microsoft-Windows-Security-Auditing`), sempre igual em todos os eventos. Os dados ricos (IP, porta, conta-alvo) só existiam no `.txt`.
 
-**Próximos passos de um N1 real, antes de escalar:**
-- Verificar se a conta atacada deveria de fato existir com acesso SSH por senha (neste caso, não deveria: é uma exposição desnecessária).
-- Checar se o IP de origem tentou o mesmo padrão contra outros hosts da rede.
-- Investigar atividade pós-login (comandos executados, arquivos acessados) para determinar se houve ação além da simples autenticação.
-- Documentar linha do tempo completa e escalar para N2 com recomendação de contenção.
+Para extrair valores únicos e validar padrões (evitar assumir "sempre é X" sem checar todas as ocorrências):
 
-## Recomendações de remediação / hardening
+```bash
+grep "Account Name:" BTLO_Bruteforce_Challenge.txt | sort | uniq -c
+grep "Failure Reason:" BTLO_Bruteforce_Challenge.txt | sort | uniq -c
+grep "Source Network Address:" BTLO_Bruteforce_Challenge.txt | sort | uniq -c
+```
 
-- Remover a conta de teste (`teste`) após o exercício, ou desabilitar login por senha para ela.
-- Considerar desabilitar autenticação por senha via SSH em favor de autenticação por chave (`PasswordAuthentication no`), mantendo senha apenas onde estritamente necessário.
-- Implementar bloqueio por tentativas (`faillock`/`pam_tally2`) ou uma ferramenta como `fail2ban` para conter automaticamente IPs com esse padrão de comportamento.
-- Garantir que a coleta de logs do Wazuh não dependa exclusivamente do `journald` para fontes críticas como autenticação SSH. Manter `/var/log/auth.log` como fonte explícita e testada.
+### 5. Range de portas de origem — lidando com CRLF
 
-## Lições aprendidas
+Para identificar o range de portas usadas pelo atacante, foi necessário extrair, limpar e ordenar numericamente os valores de "Source Port":
 
-- Confirmar que a fonte de dados configurada no SIEM é de fato a que se espera (journald vs. arquivo de log tradicional) antes de assumir que "não há ataque" quando não há alerta.
-- Validar a ground truth (log bruto no host) antes de suspeitar do SIEM. Nesse caso, o log estava correto, o gap era só na coleta.
-- Um alerta de correlação (ex: "múltiplas falhas seguidas de sucesso") é mais valioso para triagem do que eventos individuais de falha, pois reduz ruído e já aponta o padrão crítico diretamente.
-- O próprio SIEM pode enriquecer o alerta com múltiplos frameworks (MITRE ATT&CK, NIST 800-53, PCI DSS, HIPAA, GDPR). Vale a pena explorar esses campos ao documentar um caso, pois eles já vêm prontos para justificar a gravidade em termos que um time de compliance também entende.
+```bash
+grep "Source Port:" BTLO_Bruteforce_Challenge.txt | awk '{print $NF}' | head -5
+```
+
+![Lista de source ports extraídos](screenshots/05-source-ports-lista.png)
+
+Uma primeira tentativa de filtrar apenas valores numéricos com `grep -E '^[0-9]+$'` retornou zero resultados. Diagnóstico por eliminação (testando cada etapa do pipeline separadamente) revelou o problema:
+
+```bash
+grep "Source Port:" BTLO_Bruteforce_Challenge.txt | awk '{print $NF}' | head -3 | cat -A
+# 59545^M$
+```
+
+O `^M` indica um caractere `\r` (carriage return) — o arquivo `.txt` foi gerado no Windows e usa quebra de linha CRLF, enquanto as ferramentas Linux esperam LF. Em vez de alterar o arquivo original (**princípio de cadeia de custódia** — evidências nunca devem ser modificadas), o `\r` foi removido apenas dentro do pipeline de processamento:
+
+```bash
+# Porta mínima
+grep "Source Port:" BTLO_Bruteforce_Challenge.txt | awk '{print $NF}' | tr -d '\r' | grep -E '^[0-9]+$' | sort -n | head -1
+
+# Porta máxima
+grep "Source Port:" BTLO_Bruteforce_Challenge.txt | awk '{print $NF}' | tr -d '\r' | grep -E '^[0-9]+$' | sort -n | tail -1
+```
+
+![Diagnóstico do problema CRLF e range de portas final](screenshots/06-pipeline-crlf-fix-portas.png)
+
+Resultado: portas de origem variando entre **49162** e **65534**.
+
+### 6. Geolocalização do IP atacante
+
+```bash
+whois 113.161.192.227
+```
+
+Campo `country:` no resultado confirmou a origem do IP (Vietnã — VNPT-VN).
+
+![Resultado do whois confirmando Vietnã](screenshots/04-whois-resultado-vietna.png)
+
+---
+
+## ✅ Prova de Conclusão
+
+![Todas as questões resolvidas na plataforma BTLO](screenshots/07-challenge-solved-btlo.png)
+
+## ❓ Perguntas e Respostas
+
+| # | Pergunta | Resposta | Como foi obtida |
+|---|----------|----------|------------------|
+| 1 | Quantos eventos de Audit Failure existem? | **3103** | `grep -c "Audit Failure" BTLO_Bruteforce_Challenge.csv` |
+| 2 | Username da conta local sendo atacada | **administrator** | `grep "Account Name:" ... \| sort \| uniq -c` no campo "Account For Which Logon Failed" |
+| 3 | Motivo da falha (Failure Reason) | **Unknown user name or bad password** | `grep "Failure Reason:" ... \| sort \| uniq -c` |
+| 4 | Windows Event ID associado | **4625** | Inspeção direta do cabeçalho do evento |
+| 5 | IP de origem do ataque | **113.161.192.227** | `grep "Source Network Address:" ... \| sort \| uniq -c` |
+| 6 | País associado ao IP | **Vietnã (VN)** | `whois 113.161.192.227` |
+| 7 | Range de portas de origem | **49162-65534** | `sort -n` com `head -1` / `tail -1` após limpar CRLF |
+
+---
+
+## 🎯 Indicators of Compromise (IOCs)
+
+| Tipo | Valor |
+|------|-------|
+| IP de origem | 113.161.192.227 |
+| País de origem | Vietnã |
+| Conta-alvo | administrator |
+| Event ID | 4625 (Logon Failure) |
+| Logon Type | 3 (Network) |
+| Volume de tentativas | 3.103 eventos |
+| Técnica MITRE ATT&CK | T1110 – Brute Force |
+
+---
+
+## 📝 Resumo Executivo
+
+Entre 12/02/2022, o host monitorado registrou **3.103 tentativas de logon falhas** (Event ID 4625, Logon Type 3 — rede) originadas do IP **113.161.192.227** (Vietnã), todas direcionadas à conta administrativa local **`administrator`**, caracterizando um ataque de **força bruta via RDP** (MITRE ATT&CK T1110 — Credential Access). Não há evidência nos dados analisados de que o ataque tenha resultado em autenticação bem-sucedida. Recomenda-se bloqueio do IP de origem no firewall perimetral, aplicação de política de bloqueio de conta após N tentativas falhas (account lockout), e desabilitação/renomeação da conta `administrator` padrão exposta à rede.
+
+---
+
+## 📚 Lições Aprendidas
+
+- **Nunca analisar arquivos suspeitos/de investigação na máquina principal** — sempre usar VM isolada, mesmo para arquivos aparentemente "seguros" como logs de texto.
+- **`wc -l` não é confiável para contar registros em CSV** com campos multilinha — usar `grep -c` em um padrão único do registro é mais seguro.
+- **Arquivos exportados no Windows costumam usar CRLF** (`\r\n`), o que quebra silenciosamente pipelines de regex no Linux (`^...$`). Diagnosticar com `cat -A` e limpar com `tr -d '\r'` sem alterar o arquivo original.
+- **Cadeia de custódia**: evidências nunca devem ser modificadas — filtros e limpezas devem ocorrer em pipeline, nunca sobrescrevendo o arquivo de origem.
+- **Nem toda coluna com nome "Source" é o que parece** — no CSV exportado do Windows Event Viewer, "Source" é o provedor do log, não o IP de origem do evento.
+- **Sempre validar hipóteses com dados, não apenas com a primeira amostra** — usar `sort | uniq -c` para confirmar se um valor observado (IP, usuário, motivo de falha) se repete de forma consistente em todo o dataset.
+
+---
+
+*Writeup produzido como parte de treinamento prático para certificação SOC Analyst N1, praticando em ambiente BTLO com mentoria simulada.*
